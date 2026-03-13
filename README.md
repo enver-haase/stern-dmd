@@ -171,9 +171,9 @@ In the main `while true` / `for file` loop, find the weather display block that 
 Insert the following **between** the weather `fi` and the `Current_Clock_Font` line:
 
 ```bash
-		# Highscores display
+		# Highscores display: show previous GIF, render next in background
 		if [ "$Highscore_Active" == "1" ]; then
-			python3 /opt/stern-dmd/stern_dmd_highscores.py --config /opt/stern-dmd/stern_dmd.ini --output /tmp/stern_highscore_current.gif 2>/dev/null
+			# Show the previously rendered GIF (skip on first boot)
 			if [ -f "/tmp/stern_highscore_current.gif" ]; then
 				sudo ./RPI2DMD_Anim_clock --led-cols="$Panel_XSize" --led-rows="$Panel_YSize" \
 					--led-chain="$Panel_XNumber" --led-parallel="$Panel_YNumber" \
@@ -182,8 +182,17 @@ Insert the following **between** the weather `fi` and the `Current_Clock_Font` l
 					-g "/tmp/stern_highscore_current.gif" \
 					-T "" -t "0" -D "" -d "0"
 			fi
+			# Render next machine in background (if not already rendering)
+			if [ ! -f "/tmp/stern_highscore_rendering" ]; then
+				(touch /tmp/stern_highscore_rendering && \
+				 python3 /opt/stern-dmd/stern_dmd_highscores.py --config /opt/stern-dmd/stern_dmd.ini --output /tmp/stern_highscore_next.gif 2>/dev/null && \
+				 mv /tmp/stern_highscore_next.gif /tmp/stern_highscore_current.gif; \
+				 rm -f /tmp/stern_highscore_rendering) &
+			fi
 		fi
 ```
+
+The display shows the previously rendered GIF instantly (no delay), while the next machine's GIF renders in the background. On first boot after enabling, no highscore is shown until the background render completes (takes ~6 seconds on a Pi); from the second loop iteration onward it displays seamlessly.
 
 ### Step 5: Reboot
 
@@ -191,7 +200,7 @@ Insert the following **between** the weather `fi` and the `Current_Clock_Font` l
 sudo reboot
 ```
 
-The highscore display will now appear in the DMD rotation cycle, showing one machine per loop iteration.
+The highscore display will now appear in the DMD rotation cycle, showing one machine per loop iteration in round-robin order.
 
 ## Disabling
 
