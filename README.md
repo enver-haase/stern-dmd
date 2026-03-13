@@ -16,6 +16,27 @@ Each invocation shows one machine in round-robin order: machine logo + name on t
 - **Player avatar**: sourced from Stern Insider profile; falls back to a silver pinball icon
 - **Machine logo**: square logo from Stern, shrunk to 16x16
 
+## Prerequisites
+
+You need:
+- A **Raspberry Pi** running [RPI2DMD](https://github.com/frumpy4/RPI2DMD) with a 128x32 LED matrix panel
+- A **Stern Insider Connected** account with at least one registered home machine
+- SSH access to the Pi (default login: `pi` / `raspberry`)
+
+## Dependencies
+
+Everything needed is already installed on a standard RPI2DMD Raspbian image:
+
+- **Python 3.7+** — pre-installed on Raspbian Buster
+- **Pillow** (Python Imaging Library) — pre-installed on Raspbian Buster (`python3-pil` package)
+- **No pip packages required** — the script uses only stdlib + Pillow
+
+If for some reason Pillow is missing, install it:
+```bash
+sudo apt-get update
+sudo apt-get install python3-pil
+```
+
 ## Usage
 
 ```bash
@@ -70,35 +91,108 @@ password = your_password
 
 This file holds your Stern Insider Connected login. Create it manually next to `stern_dmd.ini`.
 
-## Dependencies
-
-- Python 3.7+
-- Pillow (`pip install Pillow`)
-- Bundled fonts: `PIXEL_Retro Gaming.ttf`, `DEFAULT_GOUDYSTO.TTF` (and others for experimentation)
-- `pinball_default.png` — fallback avatar for players without a Stern profile picture
-
 ## Deployment on the Pi
 
-1. Copy `stern-dmd/` to `/opt/stern-dmd/` on the Pi
-2. Create `/opt/stern-dmd/credentials.ini` with your Stern login
-3. Add `Highscore_Active=1` to `/media/usb/Config/config.txt`
-4. Add the highscore block to `/opt/RPI2DMD/go.sh` (see below)
+### Step 1: Copy files to the Pi
 
-### go.sh integration
+From your development machine:
+```bash
+ssh pi@RPI2DMD  # password: raspberry
+sudo mkdir -p /opt/stern-dmd
+sudo chown pi:pi /opt/stern-dmd
+exit
+scp stern_dmd_highscores.py stern_dmd.ini pinball_default.png \
+    "PIXEL_Retro Gaming.ttf" DEFAULT_GOUDYSTO.TTF \
+    pi@RPI2DMD:/opt/stern-dmd/
+```
 
-Add after the weather display block:
+### Step 2: Create credentials file
 
 ```bash
-# Highscores display
-if [ "$Highscore_Active" == "1" ]; then
-    python3 /opt/stern-dmd/stern_dmd_highscores.py --config /opt/stern-dmd/stern_dmd.ini --output /tmp/stern_highscore_current.gif
-    if [ -f "/tmp/stern_highscore_current.gif" ]; then
-        sudo ./RPI2DMD_Anim_clock --led-cols="$Panel_XSize" --led-rows="$Panel_YSize" \
-            --led-chain="$Panel_XNumber" --led-parallel="$Panel_YNumber" \
-            --led-slowdown-gpio="$GPIO_Slowdown" --led-brightness="${Panel_Brightness[$heure]}" \
-            --led-rgb-sequence="$RGB_Order" --led-pwm-bits="$PWM_Bits" \
-            -g "/tmp/stern_highscore_current.gif" \
-            -T "" -t "0" -D "" -d "0"
-    fi
-fi
+ssh pi@RPI2DMD
+cat > /opt/stern-dmd/credentials.ini << 'EOF'
+[stern]
+username = your_email@example.com
+password = your_password
+EOF
 ```
+
+### Step 3: Test it
+
+```bash
+python3 /opt/stern-dmd/stern_dmd_highscores.py \
+    --config /opt/stern-dmd/stern_dmd.ini \
+    --output /tmp/stern_highscore_current.gif
+```
+
+You should see output like:
+```
+Authenticated with Stern Insider
+Displaying: GODZILLA / ROC / 1,185,161,670
+GIF saved to /tmp/stern_highscore_current.gif
+```
+
+### Step 4: Integrate into RPI2DMD display cycle
+
+#### 4a. Add parameter to config.txt
+
+Append to `/media/usb/Config/config.txt`:
+```
+# Highscore Configuration
+Highscore_Active=1
+```
+
+#### 4b. Add `Highscore_Active` to the parameter loading function
+
+In `/opt/RPI2DMD/go.sh`, find the `fonction_charge_param` function. Inside it, locate the line:
+```bash
+Gif_Active Clock_Active Date_Active Weather_Active \
+```
+and change it to:
+```bash
+Gif_Active Clock_Active Date_Active Weather_Active Highscore_Active \
+```
+
+#### 4c. Add the default variable
+
+Near the other default variable declarations (around `Weather_Active="1"`), add:
+```bash
+Highscore_Active="1"
+```
+
+#### 4d. Add the highscore display block
+
+In the main `while true` / `for file` loop, find the weather display block that ends with:
+```bash
+		fi
+		Current_Clock_Font=...
+```
+
+Insert the following **between** the weather `fi` and the `Current_Clock_Font` line:
+
+```bash
+		# Highscores display
+		if [ "$Highscore_Active" == "1" ]; then
+			python3 /opt/stern-dmd/stern_dmd_highscores.py --config /opt/stern-dmd/stern_dmd.ini --output /tmp/stern_highscore_current.gif 2>/dev/null
+			if [ -f "/tmp/stern_highscore_current.gif" ]; then
+				sudo ./RPI2DMD_Anim_clock --led-cols="$Panel_XSize" --led-rows="$Panel_YSize" \
+					--led-chain="$Panel_XNumber" --led-parallel="$Panel_YNumber" \
+					--led-slowdown-gpio="$GPIO_Slowdown" --led-brightness="${Panel_Brightness[$heure]}" \
+					--led-rgb-sequence="$RGB_Order" --led-pwm-bits="$PWM_Bits" \
+					-g "/tmp/stern_highscore_current.gif" \
+					-T "" -t "0" -D "" -d "0"
+			fi
+		fi
+```
+
+### Step 5: Reboot
+
+```bash
+sudo reboot
+```
+
+The highscore display will now appear in the DMD rotation cycle, showing one machine per loop iteration.
+
+## Disabling
+
+Set `Highscore_Active=0` in `/media/usb/Config/config.txt` (or via the RPI2DMD web interface if it supports custom parameters).
