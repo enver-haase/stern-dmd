@@ -296,6 +296,14 @@ def fit_image(img, max_height):
     return img.resize((new_w, max_height), Image.LANCZOS)
 
 
+def _font_getbbox(font, text):
+    """Compatibility wrapper: getbbox (Pillow 8+) or fallback to getsize (Pillow 5+)."""
+    if hasattr(font, "getbbox"):
+        return font.getbbox(text)
+    w, h = font.getsize(text)
+    return (0, 0, w, h)
+
+
 def _resolve_font_path(cfg, key):
     """Resolve a font path from config, trying the path as-is first, then relative to script dir."""
     path = cfg.get("display", key, fallback=None)
@@ -317,7 +325,7 @@ def load_font(text, max_width, font_path, start_size=14, min_size=6):
             font = ImageFont.truetype(font_path, size)
         except (OSError, IOError):
             return ImageFont.load_default()
-        bbox = font.getbbox(text)
+        bbox = _font_getbbox(font, text)
         tw = bbox[2] - bbox[0]
         if tw <= max_width:
             return font
@@ -359,7 +367,7 @@ def generate_gif(champion, cfg, output_path, force_effect=None):
     name_text = champion["name"]
     name_avail_width = DMD_WIDTH - logo_width - (2 if logo_width else 0) - 2
     name_font = load_font(name_text, name_avail_width, name_font_path, start_size=12, min_size=6)
-    name_bbox = name_font.getbbox(name_text)
+    name_bbox = _font_getbbox(name_font, name_text)
     name_tw = name_bbox[2] - name_bbox[0]
     name_th = name_bbox[3] - name_bbox[1]
     name_y_off = name_bbox[1]
@@ -371,12 +379,12 @@ def generate_gif(champion, cfg, output_path, force_effect=None):
     bot_avail_width = DMD_WIDTH - avatar_width - 2
     score_font = load_font(full_bot_text, bot_avail_width, score_font_path, start_size=12, min_size=6)
 
-    initials_bbox = score_font.getbbox(initials_text)
+    initials_bbox = _font_getbbox(score_font, initials_text)
     initials_tw = initials_bbox[2] - initials_bbox[0]
-    space_bbox = score_font.getbbox(initials_text + " ")
+    space_bbox = _font_getbbox(score_font, initials_text + " ")
     space_after_initials = (space_bbox[2] - space_bbox[0]) - initials_tw
 
-    full_bot_bbox = score_font.getbbox(full_bot_text)
+    full_bot_bbox = _font_getbbox(score_font, full_bot_text)
     score_tw = full_bot_bbox[2] - full_bot_bbox[0]
     score_th = full_bot_bbox[3] - full_bot_bbox[1]
     score_y_off = full_bot_bbox[1]
@@ -503,7 +511,7 @@ def generate_gif(champion, cfg, output_path, force_effect=None):
                 pulse_font = ImageFont.truetype(score_font_path, big_size)
             except (OSError, IOError):
                 pulse_font = score_font
-            pb = pulse_font.getbbox(initials_text)
+            pb = _font_getbbox(pulse_font, initials_text)
             pw, ph = pb[2] - pb[0], pb[3] - pb[1]
             # Center the pulsing initials vertically in bot_half
             py = top_half + (bot_half - ph) // 2 - pb[1]
@@ -528,7 +536,7 @@ def generate_gif(champion, cfg, output_path, force_effect=None):
             draw = ImageDraw.Draw(img)
             draw.text((initials_x, bot_y_center), initials_text,
                       fill=SCORE_COLOR, font=score_font)
-            ib = score_font.getbbox(initials_text)
+            ib = _font_getbbox(score_font, initials_text)
             iw, ih = ib[2] - ib[0], ib[3] - ib[1]
             for _ in range(5):
                 sx = initials_x + rng.randint(-2, iw + 2)
