@@ -438,6 +438,24 @@ def generate_gif(champion, cfg, output_path, force_effect=None):
         score_raster_colors.append((r, g, b))
 
     n_total = n_scroll_in + n_hold + n_scroll_out
+
+    # Pre-build full gradient images for each possible raster offset
+    _name_grads = []
+    for off in range(raster_height):
+        g = Image.new("RGB", (DMD_WIDTH, DMD_HEIGHT), (0, 0, 0))
+        for py in range(DMD_HEIGHT):
+            row = Image.new("RGB", (DMD_WIDTH, 1), raster_colors[(py + off) % raster_height])
+            g.paste(row, (0, py))
+        _name_grads.append(g)
+
+    _score_grads = []
+    for off in range(score_raster_height):
+        g = Image.new("RGB", (DMD_WIDTH, DMD_HEIGHT), (0, 0, 0))
+        for py in range(DMD_HEIGHT):
+            row = Image.new("RGB", (DMD_WIDTH, 1), score_raster_colors[(py - off) % score_raster_height])
+            g.paste(row, (0, py))
+        _score_grads.append(g)
+
     frames = []
     frame_duration_ms = int(1000 / fps)
 
@@ -468,13 +486,9 @@ def generate_gif(champion, cfg, output_path, force_effect=None):
         name_draw.text((text_x, top_y_center), name_text, fill=(255, 255, 255), font=name_font)
         name_mask = name_layer.convert("L")
 
-        # Build raster bar gradient: each scanline is one solid color, sweeping vertically
+        # Lookup pre-built raster gradient for this frame
         raster_offset = int((frame_idx / max(1, n_total - 1)) * raster_height * 4)
-        grad_img = Image.new("RGB", (DMD_WIDTH, DMD_HEIGHT), (0, 0, 0))
-        for py in range(DMD_HEIGHT):
-            color = raster_colors[(py + raster_offset) % raster_height]
-            for px in range(DMD_WIDTH):
-                grad_img.putpixel((px, py), color)
+        grad_img = _name_grads[raster_offset % raster_height]
 
         # Composite: where name_mask is white, use raster colors; elsewhere keep img
         img = Image.composite(grad_img, img, name_mask)
@@ -562,13 +576,9 @@ def generate_gif(champion, cfg, output_path, force_effect=None):
         score_draw.text((score_num_x, bot_y_center), score_num_text, fill=(255, 255, 255), font=score_font)
         score_mask = score_layer.convert("L")
 
-        # Sweep downward = subtract offset instead of add
+        # Lookup pre-built score raster gradient for this frame
         score_raster_offset = int((frame_idx / max(1, n_total - 1)) * score_raster_height * 4)
-        score_grad = Image.new("RGB", (DMD_WIDTH, DMD_HEIGHT), (0, 0, 0))
-        for py in range(DMD_HEIGHT):
-            color = score_raster_colors[(py - score_raster_offset) % score_raster_height]
-            for px in range(DMD_WIDTH):
-                score_grad.putpixel((px, py), color)
+        score_grad = _score_grads[score_raster_offset % score_raster_height]
 
         img = Image.composite(score_grad, img, score_mask)
 
