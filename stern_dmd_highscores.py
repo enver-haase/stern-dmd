@@ -8,7 +8,9 @@ import json
 import math
 import os
 import re
+import sys
 import time
+import urllib.error
 import urllib.request
 import urllib.parse
 import http.cookiejar
@@ -28,6 +30,13 @@ CACHE_DIR = "/tmp/stern_highscores"
 CACHE_FILE = os.path.join(CACHE_DIR, "cache.json")
 INDEX_FILE = os.path.join(CACHE_DIR, "next_index")
 IMG_CACHE_DIR = os.path.join(CACHE_DIR, "images")
+ACTION_ID_CACHE = os.path.join(CACHE_DIR, "action_id.txt")
+
+# Initial seed for the Next.js server-action ID used by login. The real ID is
+# re-discovered from insider.sternpinball.com/login whenever a login attempt
+# fails, then persisted to ACTION_ID_CACHE -- so this value only matters on a
+# fresh install with no cache.
+FALLBACK_ACTION_ID = "6019d9ac959a924fb98bf8bca486c1f893b70dcdce"
 
 # Browser-like headers used by the Stern Insider web app
 BROWSER_HEADERS = {
@@ -65,11 +74,70 @@ def _load_credentials(cfg):
     return cfg.get("stern", "username"), cfg.get("stern", "password")
 
 
-def login(cfg):
-    """Authenticate with Stern Insider via Next.js server action. Returns (token, cookies) or (None, None)."""
+def _load_cached_action_id():
+    if os.path.exists(ACTION_ID_CACHE):
+        try:
+            with open(ACTION_ID_CACHE) as f:
+                value = f.read().strip()
+            if re.fullmatch(r"[0-9a-f]+", value or ""):
+                return value
+        except OSError:
+            pass
+    return None
+
+
+def _save_action_id(action_id):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(ACTION_ID_CACHE, "w") as f:
+        f.write(action_id)
+
+
+def _discover_action_id(cfg):
+    """Scrape the login page to find the current performLogin server-action ID.
+
+    Called only on login failure with a stale cached/fallback ID -- at most once
+    per Stern deploy. Fetches the login HTML, then the JS chunks it references,
+    and stops at the first chunk that exposes a createServerReference(..., "performLogin").
+    """
+    login_url = cfg.get("api", "login_url")
+    parsed = urllib.parse.urlparse(login_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    req = urllib.request.Request(login_url)
+    for k, v in BROWSER_HEADERS.items():
+        req.add_header(k, v)
+    try:
+        html = urllib.request.urlopen(req, timeout=30, context=_ssl_context()).read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        print(f"action-id discovery: failed to fetch {login_url}: {e}", file=sys.stderr)
+        return None
+
+    chunks = sorted(set(re.findall(r'_next/static/chunks/[^\\"\s]+\.js', html)))
+    # Minifier emits `(0,o.createServerReference)("hash",...)` -- `\)?` handles
+    # the closing paren of the iife idiom between the identifier and the call.
+    pattern = re.compile(r'createServerReference\)?\("([0-9a-f]+)"[^)]*"performLogin"')
+
+    for chunk in chunks:
+        chunk_url = urllib.parse.urljoin(origin + "/", chunk)
+        try:
+            req = urllib.request.Request(chunk_url)
+            for k, v in BROWSER_HEADERS.items():
+                req.add_header(k, v)
+            body = urllib.request.urlopen(req, timeout=30, context=_ssl_context()).read().decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        m = pattern.search(body)
+        if m:
+            return m.group(1)
+
+    print(f"action-id discovery: no performLogin reference found in {len(chunks)} chunks", file=sys.stderr)
+    return None
+
+
+def _attempt_login(cfg, action_id):
+    """Single login POST. Returns (token, cookies, status, body_excerpt)."""
     url = cfg.get("api", "login_url")
     username, password = _load_credentials(cfg)
-
     body = json.dumps([username, password]).encode("utf-8")
 
     req = urllib.request.Request(url, data=body, method="POST")
@@ -77,7 +145,7 @@ def login(cfg):
     req.add_header("Accept", "text/x-component")
     req.add_header("Referer", "https://insider.sternpinball.com/login")
     req.add_header("Origin", "https://insider.sternpinball.com")
-    req.add_header("Next-Action", "9d2cf818afff9e2c69368771b521d93585a10433")
+    req.add_header("Next-Action", action_id)
     req.add_header("Next-Router-State-Tree",
                     "%5B%22%22%2C%7B%22children%22%3A%5B%22login%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2C%22%2Flogin%22%2C%22refresh%22%5D%7D%5D%7D%2Cnull%2Cnull%2Ctrue%5D")
     for k, v in BROWSER_HEADERS.items():
@@ -86,19 +154,69 @@ def login(cfg):
     req.add_header("Sec-Fetch-Mode", "cors")
     req.add_header("Sec-Fetch-Site", "same-origin")
 
-    resp = urllib.request.urlopen(req, timeout=30, context=_ssl_context())
+    try:
+        resp = urllib.request.urlopen(req, timeout=30, context=_ssl_context())
+        status = resp.status
+        headers = resp.headers
+        resp_body = resp.read()
+    except urllib.error.HTTPError as e:
+        return None, None, e.code, e.read()[:500].decode("utf-8", errors="ignore")
+
     token = None
     cookies_parts = []
-    for header_val in resp.headers.get_all("Set-Cookie") or []:
-        cookie_part = header_val.split(";")[0]
-        cookies_parts.append(cookie_part)
+    for header_val in headers.get_all("Set-Cookie") or []:
+        cookies_parts.append(header_val.split(";")[0])
         m = re.search(r"spb-insider-token=([^;]+)", header_val)
         if m:
             token = m.group(1)
-
     cookies = "; ".join(cookies_parts)
+    excerpt = "" if token else resp_body[:500].decode("utf-8", errors="ignore")
+    return (token, cookies, status, excerpt) if token else (None, None, status, excerpt)
+
+
+def login(cfg):
+    """Authenticate with Stern Insider via Next.js server action.
+
+    Uses a persisted action ID; on failure, scrapes the login page to refresh
+    it and retries exactly once. Network cost is zero extra requests in steady
+    state -- discovery only runs when Stern redeploys and invalidates the ID.
+    Returns (token, cookies) or (None, None).
+    """
+    action_id = _load_cached_action_id() or FALLBACK_ACTION_ID
+
+    token, cookies, status, excerpt = _attempt_login(cfg, action_id)
     if token:
         return token, cookies
+
+    # Retry path: action ID likely stale after a Stern deploy. Only re-discover
+    # for response shapes that match action-not-found; skip on 5xx (server-side
+    # problem, not our concern) and 401/403 (credentials problem, no point).
+    if status in (401, 403) or (status is not None and status >= 500):
+        print(f"login: HTTP {status} with action id {action_id[:16]}...; not refreshing (likely credentials or server issue)", file=sys.stderr)
+        if excerpt:
+            print(f"  response excerpt: {excerpt[:200]}", file=sys.stderr)
+        return None, None
+
+    print(f"login: HTTP {status} but no token with action id {action_id[:16]}...; attempting to refresh action id", file=sys.stderr)
+    if excerpt:
+        print(f"  response excerpt: {excerpt[:200]}", file=sys.stderr)
+
+    new_action_id = _discover_action_id(cfg)
+    if not new_action_id:
+        return None, None
+    if new_action_id == action_id:
+        print(f"login: discovered action id matches cached one; not retrying", file=sys.stderr)
+        return None, None
+
+    print(f"login: discovered new action id {new_action_id[:16]}...; retrying", file=sys.stderr)
+    token, cookies, status, excerpt = _attempt_login(cfg, new_action_id)
+    if token:
+        _save_action_id(new_action_id)
+        return token, cookies
+
+    print(f"login: still failed after refresh (HTTP {status})", file=sys.stderr)
+    if excerpt:
+        print(f"  response excerpt: {excerpt[:200]}", file=sys.stderr)
     return None, None
 
 
