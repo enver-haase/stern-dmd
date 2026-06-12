@@ -43,7 +43,7 @@ sudo apt-get install python3-pil
 python3 stern_dmd_highscores.py --config stern_dmd.ini --output /tmp/stern_highscore_current.gif
 ```
 
-Run it multiple times to cycle through machines. API results are cached to avoid hammering the Stern servers (default: 3000 seconds between fetches).
+Run it multiple times to cycle through machines. API results are cached to avoid hammering the Stern servers (default: 600 seconds between fetches).
 
 ## Configuration
 
@@ -56,7 +56,7 @@ credentials_file = credentials.ini
 
 [display]
 # Minimum seconds between API re-fetches (cached results used otherwise)
-min_poll_seconds = 3000
+min_poll_seconds = 600
 
 # Default/fallback font
 font_path = PIXEL_Retro Gaming.ttf
