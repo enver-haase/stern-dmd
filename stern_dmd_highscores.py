@@ -247,16 +247,31 @@ def api_get(url, token, cookies, cfg):
 
 
 def fetch_machines(token, cookies, cfg):
-    url = cfg.get("api", "machines_url")
-    data = api_get(url, token, cookies, cfg)
-    # Response: {"user": {"machines": [...]}}
-    if isinstance(data, dict) and "user" in data:
-        machines = data["user"].get("machines", [])
-    elif isinstance(data, list):
-        machines = data
-    else:
-        machines = []
-    return [m for m in machines if not m.get("archived", False)]
+    # Stern's API accepts group_type=home (personal Insider) or group_type=business
+    # (operator profile). Query both and merge so the display works regardless of
+    # which group(s) the account uses.
+    base = cfg.get("api", "machines_url").split("?", 1)[0]
+    seen = set()
+    out = []
+    for group_type in ("home", "business"):
+        url = f"{base}?group_type={group_type}"
+        try:
+            data = api_get(url, token, cookies, cfg)
+        except Exception:
+            continue
+        if isinstance(data, dict) and "user" in data:
+            machines = data["user"].get("machines", [])
+        elif isinstance(data, list):
+            machines = data
+        else:
+            machines = []
+        for m in machines:
+            mid = m.get("id")
+            if mid is None or mid in seen or m.get("archived", False):
+                continue
+            seen.add(mid)
+            out.append(m)
+    return out
 
 
 def fetch_highscores(token, cookies, cfg, machine_id):

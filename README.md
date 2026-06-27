@@ -75,7 +75,7 @@ fps = 30
 
 [api]
 login_url = https://insider.sternpinball.com/login
-machines_url = https://cms.prd.sternpinball.io/api/v1/portal/user_registered_machines/?group_type=home
+machines_url = https://cms.prd.sternpinball.io/api/v1/portal/user_registered_machines/
 highscores_url = https://cms.prd.sternpinball.io/api/v1/portal/game_machine_high_scores/?machine_id={}
 location_country = DE
 location_continent = EU
